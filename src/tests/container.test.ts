@@ -9,6 +9,27 @@ describe('Container', () => {
     expect(container.sleepAfter).toBe('10m');
   });
 
+  test('should use configured constructor startup options', async ({ mockCtx }) => {
+    const container = new Container(
+      mockCtx as never,
+      {},
+      {
+        defaultPort: 8080,
+        envVars: { MESSAGE: 'configured' },
+        entrypoint: ['node', 'server.js'],
+        enableInternet: false,
+      }
+    );
+
+    await container.startAndWaitForPorts();
+
+    expect(mockCtx.container.start).toHaveBeenCalledWith({
+      enableInternet: false,
+      env: { MESSAGE: 'configured' },
+      entrypoint: ['node', 'server.js'],
+    });
+  });
+
   test('startAndWaitForPorts should start container if not running (single port)', async ({
     mockCtx,
     container,
@@ -77,6 +98,10 @@ describe('Container', () => {
       })
     ).rejects.toThrow('you are requesting too many containers per second');
     expect(onErrorSpy).toHaveBeenCalled();
+    expect(mockCtx.storage.put).toHaveBeenCalledWith(
+      '__CF_CONTAINER_STATE',
+      expect.objectContaining({ status: 'stopped' })
+    );
   });
 
   test('startAndWaitForPorts should abort the durable object on final network loss', async ({
@@ -102,6 +127,86 @@ describe('Container', () => {
     ).rejects.toThrow('there is no container instance that can be provided to this durable object');
 
     expect(mockCtx.abort).toHaveBeenCalled();
+    expect(mockCtx.storage.put).toHaveBeenCalledWith(
+      '__CF_CONTAINER_STATE',
+      expect.objectContaining({ status: 'stopped' })
+    );
+  });
+
+  test('monitor should clear running state when an instance becomes unavailable', async ({
+    mockCtx,
+    container,
+  }) => {
+    let rejectMonitor: (error: Error) => void = () => undefined;
+    mockCtx.container.monitor.mockReturnValue(
+      new Promise((_resolve, reject) => {
+        rejectMonitor = reject;
+      })
+    );
+
+    await container.start(undefined, { portToCheck: 8080, retries: 1, waitInterval: 1 });
+    rejectMonitor(
+      new Error('there is no container instance that can be provided to this durable object')
+    );
+
+    await vi.waitFor(() => {
+      expect(mockCtx.storage.put).toHaveBeenCalledWith(
+        '__CF_CONTAINER_STATE',
+        expect.objectContaining({ status: 'stopped' })
+      );
+    });
+  });
+
+  test('monitor should clear running state before reporting a terminal error', async ({
+    mockCtx,
+    container,
+  }) => {
+    let rejectMonitor: (error: Error) => void = () => undefined;
+    using onErrorSpy = vi.spyOn(container, 'onError').mockResolvedValue(undefined);
+    mockCtx.container.monitor.mockReturnValue(
+      new Promise((_resolve, reject) => {
+        rejectMonitor = reject;
+      })
+    );
+
+    await container.start(undefined, { portToCheck: 8080, retries: 1, waitInterval: 1 });
+    rejectMonitor(new Error('container supervisor failed'));
+
+    await vi.waitFor(() => {
+      expect(mockCtx.storage.put).toHaveBeenCalledWith(
+        '__CF_CONTAINER_STATE',
+        expect.objectContaining({ status: 'stopped' })
+      );
+      expect(onErrorSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'container supervisor failed' })
+      );
+    });
+  });
+
+  test('replaced monitor should not stop a newer container instance', async ({
+    mockCtx,
+    container,
+  }) => {
+    let resolveFirstMonitor: () => void = () => undefined;
+    mockCtx.container.monitor
+      .mockReturnValueOnce(
+        new Promise(resolve => {
+          resolveFirstMonitor = resolve;
+        })
+      )
+      .mockReturnValueOnce(new Promise(() => undefined));
+
+    await container.start(undefined, { portToCheck: 8080, retries: 1, waitInterval: 1 });
+    mockCtx.container.running = false;
+    await container.start(undefined, { portToCheck: 8080, retries: 1, waitInterval: 1 });
+    resolveFirstMonitor();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mockCtx.storage.put).not.toHaveBeenCalledWith(
+      '__CF_CONTAINER_STATE',
+      expect.objectContaining({ status: 'stopped_with_code' })
+    );
   });
 
   test('startAndWaitForPorts should fall back to default health check port', async ({

@@ -559,6 +559,9 @@ export class Container<Env = Cloudflare.Env> extends DurableObject<Env> {
     if (options) {
       if (options.defaultPort !== undefined) this.defaultPort = options.defaultPort;
       if (options.sleepAfter !== undefined) this.sleepAfter = options.sleepAfter;
+      if (options.envVars !== undefined) this.envVars = options.envVars;
+      if (options.entrypoint !== undefined) this.entrypoint = options.entrypoint;
+      if (options.enableInternet !== undefined) this.enableInternet = options.enableInternet;
     }
 
     // Create schedules table if it doesn't exist
@@ -1360,7 +1363,7 @@ export class Container<Env = Cloudflare.Env> extends DurableObject<Env> {
   // See https://github.com/cloudflare/containers/issues/173.
   private startInFlight: Promise<number> | undefined;
 
-  private monitorSetup = false;
+  private monitoredPromise: Promise<unknown> | undefined;
 
   private sleepAfterMs = 0;
   private inflightRequests = 0;
@@ -1773,6 +1776,9 @@ export class Container<Env = Cloudflare.Env> extends DurableObject<Env> {
             `Container exited before we could determine the container health, exit code: ${err}`
           );
 
+          await this.state.setStoppedWithCode(err);
+          this.monitor = undefined;
+
           try {
             await this.onError(toThrow);
           } catch {
@@ -1782,6 +1788,9 @@ export class Container<Env = Cloudflare.Env> extends DurableObject<Env> {
 
           throw toThrow;
         } else if (!isNoInstanceError(err)) {
+          await this.state.setStopped();
+          this.monitor = undefined;
+
           try {
             await this.onError(err);
           } catch {
@@ -1854,6 +1863,8 @@ export class Container<Env = Cloudflare.Env> extends DurableObject<Env> {
           }
 
           await handleError();
+          await this.state.setStopped();
+          this.monitor = undefined;
 
           throw new Error(NO_CONTAINER_INSTANCE_ERROR, { cause: error });
         }
@@ -1866,28 +1877,51 @@ export class Container<Env = Cloudflare.Env> extends DurableObject<Env> {
   }
 
   private setupMonitorCallbacks() {
-    if (this.monitorSetup) {
+    const monitor = this.monitor;
+    if (!monitor || this.monitoredPromise === monitor) {
       return;
     }
 
-    this.monitorSetup = true;
-    this.monitor
-      ?.then(async () => {
+    this.monitoredPromise = monitor;
+    monitor
+      .then(async () => {
         await this.ctx.blockConcurrencyWhile(async () => {
-          await this.state.setStoppedWithCode(0);
+          if (this.monitor === monitor) {
+            await this.state.setStoppedWithCode(0);
+          }
         });
       })
       .catch(async (error: unknown) => {
+        if (this.monitor !== monitor) {
+          return;
+        }
+
         if (isNoInstanceError(error)) {
-          // we will inform later
+          await this.ctx.blockConcurrencyWhile(async () => {
+            if (this.monitor === monitor) {
+              await this.state.setStopped();
+            }
+          });
           return;
         }
 
         const exitCode = getExitCodeFromError(error);
         if (exitCode !== null) {
-          await this.state.setStoppedWithCode(exitCode);
-          this.monitorSetup = false;
-          this.monitor = undefined;
+          await this.ctx.blockConcurrencyWhile(async () => {
+            if (this.monitor === monitor) {
+              await this.state.setStoppedWithCode(exitCode);
+            }
+          });
+          return;
+        }
+
+        await this.ctx.blockConcurrencyWhile(async () => {
+          if (this.monitor === monitor) {
+            await this.state.setStopped();
+          }
+        });
+
+        if (this.monitor !== monitor) {
           return;
         }
 
@@ -1899,7 +1933,12 @@ export class Container<Env = Cloudflare.Env> extends DurableObject<Env> {
         }
       })
       .finally(() => {
-        this.monitorSetup = false;
+        if (this.monitor !== monitor) {
+          return;
+        }
+
+        this.monitoredPromise = undefined;
+        this.monitor = undefined;
         if (this.timeout) {
           if (this.resolve) this.resolve();
           clearTimeout(this.timeout);
