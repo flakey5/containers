@@ -1280,7 +1280,7 @@ export class Container<Env = Cloudflare.Env> extends DurableObject<Env> {
       }
 
       if (res.body !== null) {
-        const { readable, writable } = new TransformStream();
+        const { readable, writable } = new IdentityTransformStream();
         res.body?.pipeTo(writable).finally(() => {
           this.decrementInflight();
         });
