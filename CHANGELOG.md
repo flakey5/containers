@@ -1,5 +1,12 @@
 # @cloudflare/containers
 
+## 0.3.6
+
+### Patch Changes
+
+- 9650b2d: Use `IdentityTransformStream` when proxying deferred HTTP response bodies.
+- 5b6eb5f: Remove noisy logs emitted while checking container and port readiness.
+
 ## 0.3.5
 
 ### Patch Changes
