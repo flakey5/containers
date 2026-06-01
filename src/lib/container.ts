@@ -922,13 +922,10 @@ export class Container<Env = Cloudflare.Env> extends DurableObject<Env> {
         await tcpPort.fetch(`http://${this.pingEndpoint}`, { signal: combinedSignal });
 
         // Successfully connected to this port
-        console.log(`Port ${port} is ready`);
         break;
       } catch (e) {
         // Check for specific error messages that indicate we should keep retrying
         const errorMessage = e instanceof Error ? e.message : String(e);
-
-        console.debug(`Error checking ${port}: ${errorMessage}`);
 
         // If not running, it means the container crashed
         if (!this.container.running) {
@@ -1832,11 +1829,6 @@ export class Container<Env = Cloudflare.Env> extends DurableObject<Env> {
         if (!this.container.running && isNotListeningError(error)) {
           await handleError();
         }
-
-        console.debug(
-          'Error checking if container is ready:',
-          error instanceof Error ? error.message : String(error)
-        );
 
         await Promise.any([
           new Promise(res => setTimeout(res, waitOptions.waitInterval)),
