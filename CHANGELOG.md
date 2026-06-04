@@ -1,5 +1,11 @@
 # @cloudflare/containers
 
+## 0.3.7
+
+### Patch Changes
+
+- a5fd50a: Prevent startup and stop handling races from persisting a stopped state for a running container.
+
 ## 0.3.6
 
 ### Patch Changes
