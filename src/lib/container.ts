@@ -264,6 +264,14 @@ class ContainerState {
     await this.setStatusAndupdate('stopped');
   }
 
+  async setStoppedIfUnchanged(previousState: State) {
+    if (this.status !== previousState) {
+      return;
+    }
+
+    await this.setStopped();
+  }
+
   async setStoppedWithCode(exitCode: number) {
     this.status = { status: 'stopped_with_code', lastChange: Date.now(), exitCode };
     await this.update();
@@ -774,10 +782,7 @@ export class Container<Env = Cloudflare.Env> extends DurableObject<Env> {
    * @returns A promise that resolves when the container start command has been issued
    * @throws Error if no container context is available or if all start attempts fail
    */
-  public async start(
-    startOptions?: ContainerStartConfigOptions,
-    waitOptions?: WaitOptions
-  ): Promise<void> {
+  public async start(startOptions?: ContainerStartConfigOptions, waitOptions?: WaitOptions) {
     const portToCheck =
       waitOptions?.portToCheck ??
       this.defaultPort ??
@@ -1745,7 +1750,6 @@ export class Container<Env = Cloudflare.Env> extends DurableObject<Env> {
     });
     const pollInterval = waitOptions.waitInterval ?? INSTANCE_POLL_INTERVAL_MS;
     const totalTries = waitOptions.retries ?? Math.ceil(TIMEOUT_TO_GET_CONTAINER_MS / pollInterval);
-    await this.state.setRunning();
     for (let tries = 0; tries < totalTries; tries++) {
       // Use provided options or fall back to instance properties
       const envVars = options?.envVars ?? this.envVars;
@@ -1809,6 +1813,7 @@ export class Container<Env = Cloudflare.Env> extends DurableObject<Env> {
         await this.refreshOutboundInterception();
         this.container.start(startConfig);
         this.monitor = this.container.monitor();
+        await this.state.setRunning();
       } else {
         await this.scheduleNextAlarm();
       }
@@ -2079,17 +2084,17 @@ export class Container<Env = Cloudflare.Env> extends DurableObject<Env> {
   private async syncPendingStoppedEvents() {
     const state = await this.state.getState();
     if (!this.container.running && (state.status === 'healthy' || state.status === 'running')) {
-      await this.callOnStop({ exitCode: 0, reason: 'exit' });
+      await this.callOnStop({ exitCode: 0, reason: 'exit' }, state);
       return;
     }
 
     if (!this.container.running && state.status === 'stopped_with_code') {
-      await this.callOnStop({ exitCode: state.exitCode ?? 0, reason: 'exit' });
+      await this.callOnStop({ exitCode: state.exitCode ?? 0, reason: 'exit' }, state);
       return;
     }
   }
 
-  private async callOnStop(onStopParams: StopParams) {
+  private async callOnStop(onStopParams: StopParams, stateBeforeOnStop: State) {
     if (this.onStopCalled) {
       return;
     }
@@ -2104,7 +2109,7 @@ export class Container<Env = Cloudflare.Env> extends DurableObject<Env> {
       this.onStopCalled = false;
     }
 
-    await this.state.setStopped();
+    await this.state.setStoppedIfUnchanged(stateBeforeOnStop);
   }
 
   /**

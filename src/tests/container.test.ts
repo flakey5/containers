@@ -221,6 +221,39 @@ describe('Container', () => {
     expect(mockCtx.container.getTcpPort).toHaveBeenCalledWith(33);
   });
 
+  test('alarm should not stop a container while its start loop is in flight', async ({
+    mockCtx,
+    container,
+  }) => {
+    let resumeStart: () => void = () => undefined;
+    const startBlockedBeforePhysicalStart = new Promise<void>(resolve => {
+      resumeStart = resolve;
+    });
+    vi.spyOn(container, 'scheduleNextAlarm').mockImplementationOnce(
+      () => startBlockedBeforePhysicalStart
+    );
+    using onStopSpy = vi.spyOn(container, 'onStop');
+
+    const startPromise = container.start(undefined, {
+      portToCheck: 8080,
+      retries: 1,
+      waitInterval: 1,
+    });
+    await vi.waitFor(() => {
+      expect(container.scheduleNextAlarm).toHaveBeenCalled();
+    });
+    expect(mockCtx.container.start).not.toHaveBeenCalled();
+
+    await container.alarm();
+    resumeStart();
+    await startPromise;
+
+    expect(onStopSpy).not.toHaveBeenCalled();
+    await expect(container.getState()).resolves.toEqual(
+      expect.objectContaining({ status: 'running' })
+    );
+  });
+
   test('syncPendingStoppedEvents should call onStop for stopped container with running state', async ({
     mockCtx,
     container,
@@ -236,6 +269,26 @@ describe('Container', () => {
     expect(mockCtx.storage.put).toHaveBeenCalledWith(
       '__CF_CONTAINER_STATE',
       expect.objectContaining({ status: 'stopped' })
+    );
+  });
+
+  test('onStop starting a new container should not overwrite its running state', async ({
+    mockCtx,
+    container,
+  }) => {
+    mockCtx.storage.get.mockResolvedValue({ status: 'running', lastChange: Date.now() });
+    mockCtx.container.running = false;
+    vi.spyOn(container, 'onStop').mockImplementation(async () => {
+      await container.start(undefined, { portToCheck: 8080, retries: 1, waitInterval: 1 });
+    });
+
+    await (
+      container as unknown as { syncPendingStoppedEvents(): Promise<void> }
+    ).syncPendingStoppedEvents();
+
+    expect(mockCtx.container.running).toBe(true);
+    await expect(container.getState()).resolves.toEqual(
+      expect.objectContaining({ status: 'running' })
     );
   });
 
